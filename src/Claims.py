@@ -92,6 +92,8 @@ class Claims:
         players = get_players(game)
         board_number = self.get_board_number(game)
         game_entries = set()
+        all_moves_list = list(game.mainline_moves())
+        total_moves_in_game = len(all_moves_list)
 
         # Loop to go through of all the moves of the game.
         for move in game.mainline_moves():
@@ -99,7 +101,9 @@ class Claims:
             board.push(move)
             move_counter += 1
             move = self.get_move(move_counter, san_move)
-
+            if game.headers["Result"] == "1/2-1/2" and total_moves_in_game < 60:
+                game_entries.add((ClaimType.EARLY_DRAW, board_number, players, str(total_moves_in_game/2)))
+                break
             if board.is_fivefold_repetition():
                 game_entries.add((ClaimType.FIVEFOLD, board_number, players, move))
                 self.dont_check.add(players)
@@ -108,8 +112,12 @@ class Claims:
                 game_entries.add((ClaimType.SEVENTYFIVE_MOVES, board_number, players, move))
                 self.dont_check.add(players)
                 break
+            if move_counter == 100:
+                game_entries.add((ClaimType.FIFTY_MOVES_FROM_START, board_number, players, move))
             if board.is_fifty_moves():
                 game_entries.add((ClaimType.FIFTY_MOVES, board_number, players, move))
+            if board.is_repetition(count=2):
+                game_entries.add((ClaimType.TWOFOLD, board_number, players, move))
             if board.is_threefold_repetition():
                 game_entries.add((ClaimType.THREEFOLD, board_number, players, move))
 
@@ -147,7 +155,10 @@ class Claims:
 
 
 class ClaimType(Enum):
+    TWOFOLD = "2 Fold Repetition"
     THREEFOLD = "3 Fold Repetition"
     FIVEFOLD = "5 Fold Repetition"
     FIFTY_MOVES = "50 Moves Rule"
     SEVENTYFIVE_MOVES = "75 Moves Rule"
+    FIFTY_MOVES_FROM_START = "50 Moves from Start"
+    EARLY_DRAW = "Early Draw (before 30 moves)"

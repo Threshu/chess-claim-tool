@@ -61,7 +61,7 @@ class DownloadGames(QThread):
         is_loop(bool): True if downloading continuously, else download once.
     """
     status_signal = pyqtSignal(Status)  # Signal to update GUI.
-    INTERVAL = 4
+    INTERVAL = 2
     __slots__ = ["downloads", "is_loop", "is_running", "app_path"]
 
     def __init__(self, downloads, is_loop=False):
@@ -111,7 +111,7 @@ class Scan(QThread):
 
     add_entry_signal = pyqtSignal(tuple)    # Signal to update the GUI.
     status_signal = pyqtSignal(Status)      # Signal to update the GUI.
-    INTERVAL = 4
+    INTERVAL = 2
 
     def __init__(self, claims, filename, lock, live_pgn_option):
         super().__init__()
@@ -223,7 +223,7 @@ class MakePgn(Thread):
         is_loop: True if making the pgn continously, else makes the pgn once.
         lock: The fileLock for the games.pgn between CheckPgn and MakePgn threads.
     """
-    INTERVAL = 4
+    INTERVAL = 2
     __slots__ = ["filepaths", "is_loop", "is_running", "lock", "daemon"]
 
     def __init__(self, filepaths, is_loop=False, lock=None):
