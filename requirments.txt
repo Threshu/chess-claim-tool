@@ -1,3 +1,4 @@
 certifi==2021.10.8
 chess==1.8.0
 PyQt5==5.15.6
+win10toast==0.9
