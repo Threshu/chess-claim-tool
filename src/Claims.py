@@ -16,6 +16,7 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
@@ -48,10 +49,10 @@ def is_threefold_repetition(self) -> bool:
 
 
 def is_fifty_moves(self) -> bool:
-    """ Checks if the 50 Move Draw Rule occurred in the game.
+    """ Checks if the 55 Move Draw Rule occurred in the game.
     This is an extension method of Class Board class from chess module.
     """
-    if self.halfmove_clock >= 100:
+    if self.halfmove_clock >= 110:
         if any(self.generate_legal_moves()):
             return True
     return False
@@ -70,22 +71,25 @@ def get_players(game: Any) -> str:
 class Claims:
     """
     Attributes:
-        dont_check(list): Is a list of player's names who's their game shall not
-        be checked again. This list is used for games that a 5 Fold Repetition
-        or 75 Moves Rule occurred.
-        entries(list): The list of entries. Each element of entries lists
-        is a list ([str,str,str,str]).
+        dont_check: Players whose games should not be re-checked.
+        entries: Already-emitted ClaimEntry objects (dedup).
+        enabled_claims: Set of ClaimType values that are active.
     """
 
-    def __init__(self):
+    def __init__(self, enabled_claims: set = None):
         self.dont_check = set()
         self.entries = set()
+        self.enabled_claims = enabled_claims if enabled_claims is not None else set(ClaimType)
 
-    def check_game(self, game: Any) -> set:
+    def set_enabled_claims(self, enabled_claims: set) -> None:
+        self.enabled_claims = enabled_claims
+
+    def check_game(self, game: Any, game_index: int = 0) -> set:
         """ Checks the game for 3 Fold Repetitions, 5 Fold Repetitions,
         50 Move Draw Rule and for the 75 Move Draw Rule.
         Args:
             game: The game to be checked.
+            game_index: 0-based index of this game in the PGN file.
         """
         move_counter = 0
         board = game.board()
@@ -94,32 +98,63 @@ class Claims:
         game_entries = set()
         all_moves_list = list(game.mainline_moves())
         total_moves_in_game = len(all_moves_list)
+        last_irreversible_move = 0
 
         # Loop to go through of all the moves of the game.
         for move in game.mainline_moves():
             san_move = str(board.san(move))
+
+            piece = board.piece_at(move.from_square)
+            if board.is_capture(move) or (piece is not None and piece.piece_type == 1):
+                last_irreversible_move = move_counter + 1
+
             board.push(move)
             move_counter += 1
-            move = self.get_move(move_counter, san_move)
-            if game.headers["Result"] == "1/2-1/2" and total_moves_in_game < 60:
-                game_entries.add((ClaimType.EARLY_DRAW, board_number, players, str(total_moves_in_game/2)))
+            printable_move = self.get_move(move_counter, san_move)
+
+            en = self.enabled_claims
+
+            if ClaimType.EARLY_DRAW in en and game.headers["Result"] == "1/2-1/2" and total_moves_in_game < 60:
+                game_entries.add(ClaimEntry(
+                    ClaimType.EARLY_DRAW, board_number, players,
+                    str(total_moves_in_game / 2), game_index, move_counter, 0
+                ))
                 break
-            if board.is_fivefold_repetition():
-                game_entries.add((ClaimType.FIVEFOLD, board_number, players, move))
+            if ClaimType.FIVEFOLD in en and board.is_fivefold_repetition():
+                game_entries.add(ClaimEntry(
+                    ClaimType.FIVEFOLD, board_number, players,
+                    printable_move, game_index, move_counter, last_irreversible_move
+                ))
                 self.dont_check.add(players)
                 break
-            if board.is_seventyfive_moves():
-                game_entries.add((ClaimType.SEVENTYFIVE_MOVES, board_number, players, move))
+            if ClaimType.SEVENTYFIVE_MOVES in en and board.is_seventyfive_moves():
+                game_entries.add(ClaimEntry(
+                    ClaimType.SEVENTYFIVE_MOVES, board_number, players,
+                    printable_move, game_index, move_counter, last_irreversible_move
+                ))
                 self.dont_check.add(players)
                 break
-            if move_counter == 100:
-                game_entries.add((ClaimType.FIFTY_MOVES_FROM_START, board_number, players, move))
-            if board.is_fifty_moves():
-                game_entries.add((ClaimType.FIFTY_MOVES, board_number, players, move))
-            if board.is_repetition(count=2):
-                game_entries.add((ClaimType.TWOFOLD, board_number, players, move))
-            if board.is_threefold_repetition():
-                game_entries.add((ClaimType.THREEFOLD, board_number, players, move))
+            if ClaimType.FIFTY_MOVES_FROM_START in en and move_counter == 110:
+                game_entries.add(ClaimEntry(
+                    ClaimType.FIFTY_MOVES_FROM_START, board_number, players,
+                    printable_move, game_index, move_counter, 0
+                ))
+            if ClaimType.FIFTY_MOVES in en and board.is_fifty_moves():
+                game_entries.add(ClaimEntry(
+                    ClaimType.FIFTY_MOVES, board_number, players,
+                    printable_move, game_index, move_counter, last_irreversible_move,
+                    f"First counting move: {last_irreversible_move}"
+                ))
+            if ClaimType.TWOFOLD in en and board.is_repetition(count=2):
+                game_entries.add(ClaimEntry(
+                    ClaimType.TWOFOLD, board_number, players,
+                    printable_move, game_index, move_counter, last_irreversible_move
+                ))
+            if ClaimType.THREEFOLD in en and board.is_threefold_repetition():
+                game_entries.add(ClaimEntry(
+                    ClaimType.THREEFOLD, board_number, players,
+                    printable_move, game_index, move_counter, last_irreversible_move
+                ))
 
         game_entries = game_entries - self.entries
         self.entries.update(game_entries)
@@ -158,7 +193,19 @@ class ClaimType(Enum):
     TWOFOLD = "2 Fold Repetition"
     THREEFOLD = "3 Fold Repetition"
     FIVEFOLD = "5 Fold Repetition"
-    FIFTY_MOVES = "50 Moves Rule"
+    FIFTY_MOVES = "55 Moves Rule"
     SEVENTYFIVE_MOVES = "75 Moves Rule"
-    FIFTY_MOVES_FROM_START = "50 Moves from Start"
+    FIFTY_MOVES_FROM_START = "55 Moves from Start"
     EARLY_DRAW = "Early Draw (before 30 moves)"
+
+
+@dataclass(frozen=True)
+class ClaimEntry:
+    type: ClaimType
+    board_number: str
+    players: str
+    move: str
+    game_index: int
+    move_counter: int
+    start_move_counter: int
+    comment: str = ""

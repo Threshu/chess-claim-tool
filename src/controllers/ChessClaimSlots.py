@@ -17,16 +17,19 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
+import json
 import os.path
 from threading import Lock
 from typing import List
 
 from src.views.ChessClaimView import sources_warning, ChessClaimView
-from src.Claims import Claims
+from src.Claims import Claims, ClaimType
 from src.controllers.SourceDialogController import SourceDialogController
 from src.views.SourceDialogView import AddSourceDialog
+from src.views.settings_view import ClaimSettingsDialog
 from src.helpers import get_appdata_path, Status
 from src.workers import DownloadGames, MakePgn, Scan, Stop
+from src.board_viewer import BoardViewerWindow
 
 
 class ChessClaimSlots:
@@ -48,6 +51,10 @@ class ChessClaimSlots:
         self.stop_worker = None
         self.download_worker = None
         self.scan_worker = None
+        self.board_viewer = None
+
+        # Load and apply persisted claim settings
+        self.claims_model.set_enabled_claims(self._load_claim_settings())
 
     def on_sources_button_clicked(self) -> None:
         """ Initialize the Source Dialog MVC model and opens the Source Dialog.
@@ -116,6 +123,78 @@ class ChessClaimSlots:
         """
         self.view.load_about_dialog()
 
+    def on_settings_clicked(self) -> None:
+        dialog = ClaimSettingsDialog(
+            enabled_claims=self.claims_model.enabled_claims,
+            parent=self.view,
+        )
+        if dialog.exec_() == ClaimSettingsDialog.Accepted:
+            enabled = dialog.get_enabled_claims()
+            self.claims_model.set_enabled_claims(enabled)
+            self._save_claim_settings(enabled)
+
+    def _load_claim_settings(self) -> set:
+        path = os.path.join(get_appdata_path(), "claim_settings.json")
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            return {ClaimType[k] for k, v in data.items() if v and k in ClaimType.__members__}
+        except Exception:
+            return set(ClaimType)  # all enabled by default
+
+    def _save_claim_settings(self, enabled: set) -> None:
+        path = os.path.join(get_appdata_path(), "claim_settings.json")
+        data = {ct.name: (ct in enabled) for ct in ClaimType}
+        try:
+            with open(path, "w") as f:
+                json.dump(data, f, indent=2)
+        except Exception:
+            pass
+
+    def on_board_viewer_clicked(self) -> None:
+        app_path = get_appdata_path()
+        pgn_path = os.path.join(app_path, "games.pgn")
+
+        if not os.path.exists(pgn_path):
+            return
+
+        if self.board_viewer is None:
+            self.board_viewer = BoardViewerWindow(pgn_path=pgn_path)
+        else:
+            self.board_viewer.reload_pgn(pgn_path)
+            self.board_viewer.go_end()
+
+        self.board_viewer.show()
+        self.board_viewer.raise_()
+
+    def open_viewer_for_claim(self, game_index: int, move_index: int) -> None:
+        app_path = get_appdata_path()
+        pgn_path = os.path.join(app_path, "games.pgn")
+
+        if self.board_viewer is None:
+            if not os.path.exists(pgn_path):
+                return
+            self.board_viewer = BoardViewerWindow(pgn_path=pgn_path)
+        else:
+            self.board_viewer.reload_pgn(pgn_path)
+
+        try:
+            self.board_viewer.load_game_at_index(game_index)
+            self.board_viewer.jump_to_move(move_index)
+        except Exception:
+            return
+
+        self.board_viewer.show()
+        self.board_viewer.raise_()
+
+    def on_new_move(self) -> None:
+        if self.board_viewer is None:
+            return
+
+        app_path = get_appdata_path()
+        pgn_path = os.path.join(app_path, "games.pgn")
+        self.board_viewer.reload_pgn(pgn_path)
+
     def on_stop_disable_status(self) -> None:
         """ Disables the "Scan" & "Stop" Buttons and the statusBar.
         Also changes the status of the scanButton.
@@ -159,20 +238,24 @@ class ChessClaimSlots:
     def start_download_worker(self, downloads: List[str]) -> None:
         if not downloads:
             return
-        self.download_worker = DownloadGames(downloads, True)
+        interval = self.view.button_box.interval_spinbox.value()
+        self.download_worker = DownloadGames(downloads, True, interval)
         self.download_worker.status_signal.connect(self.update_download_status)
         self.download_worker.start()
 
     def start_make_png_worker(self, lock: Lock) -> None:
         filepaths = self.sources_dialog.get_filepath_list()
-        self.make_pgn_worker = MakePgn(filepaths, True, lock)
+        interval = self.view.button_box.interval_spinbox.value()
+        self.make_pgn_worker = MakePgn(filepaths, True, lock, interval)
         self.make_pgn_worker.start()
 
     def start_scan_worker(self, lock: Lock) -> None:
         app_path = get_appdata_path()
         filename = os.path.join(app_path, "games.pgn")
+        interval = self.view.button_box.interval_spinbox.value()
 
-        self.scan_worker = Scan(self.claims_model, filename, lock, self.view.live_pgn_option)
+        self.scan_worker = Scan(self.claims_model, filename, lock, self.view.live_pgn_option, interval)
         self.scan_worker.add_entry_signal.connect(self.update_claims_table)
         self.scan_worker.status_signal.connect(self.update_bar_scan_status)
+        self.scan_worker.new_move_signal.connect(self.on_new_move)
         self.scan_worker.start()

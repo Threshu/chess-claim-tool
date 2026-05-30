@@ -64,11 +64,12 @@ class DownloadGames(QThread):
     INTERVAL = 2
     __slots__ = ["downloads", "is_loop", "is_running", "app_path"]
 
-    def __init__(self, downloads, is_loop=False):
+    def __init__(self, downloads, is_loop=False, interval=2):
         super().__init__()
         self.downloads = downloads
         self.is_loop = is_loop
         self.is_running = False
+        self.interval = interval
         self.app_path = get_appdata_path()
 
     def run(self) -> None:
@@ -90,7 +91,7 @@ class DownloadGames(QThread):
                     continue
             if not self.is_loop:
                 break
-            time.sleep(self.INTERVAL)
+            time.sleep(self.interval)
 
     def stop(self):
         self.is_running = False
@@ -109,17 +110,19 @@ class Scan(QThread):
     """
     __slots__ = ["is_running", "filename", "claims", "lock", "live_pgn_option"]
 
-    add_entry_signal = pyqtSignal(tuple)    # Signal to update the GUI.
+    add_entry_signal = pyqtSignal(object)   # Signal to update the GUI (emits ClaimEntry).
     status_signal = pyqtSignal(Status)      # Signal to update the GUI.
+    new_move_signal = pyqtSignal()          # Emitted when PGN file changes.
     INTERVAL = 2
 
-    def __init__(self, claims, filename, lock, live_pgn_option):
+    def __init__(self, claims, filename, lock, live_pgn_option, interval=2):
         super().__init__()
         self.is_running = False
         self.filename = filename
         self.claims = claims
         self.lock = lock
         self.live_pgn_option = live_pgn_option
+        self.interval = interval
 
     def run(self):
         self.is_running = True
@@ -134,6 +137,7 @@ class Scan(QThread):
 
             if self.is_file_updated(last_size, size_of_pgn):
                 self.status_signal.emit(Status.ACTIVE)
+                self.new_move_signal.emit()
                 self.check_pgn()
 
             self.status_signal.emit(Status.WAIT)
@@ -141,24 +145,29 @@ class Scan(QThread):
 
             if not self.is_running:
                 break
-            time.sleep(self.INTERVAL)
+            time.sleep(self.interval)
 
     def check_pgn(self):
         self.lock.acquire()
-        with open(self.filename) as pgn:
-            while self.is_running:
-                game = read_game(pgn)
-                if not game:
-                    break
-                if self.live_pgn_option.isChecked() and game.headers["Result"] != "*":
-                    continue
-                if get_players(game) in self.claims.dont_check:
-                    continue
-                entries = self.claims.check_game(game)
-                for entry in entries:
-                    self.add_entry_signal.emit(entry)
-
-        self.lock.release()
+        try:
+            with open(self.filename, encoding="utf-8") as pgn:
+                game_index = 0
+                while self.is_running:
+                    game = read_game(pgn)
+                    if not game:
+                        break
+                    if self.live_pgn_option.isChecked() and game.headers["Result"] != "*":
+                        game_index += 1
+                        continue
+                    if get_players(game) in self.claims.dont_check:
+                        game_index += 1
+                        continue
+                    entries = self.claims.check_game(game, game_index)
+                    for entry in entries:
+                        self.add_entry_signal.emit(entry)
+                    game_index += 1
+        finally:
+            self.lock.release()
 
     @staticmethod
     def is_file_updated(last_size, current_size):
@@ -226,12 +235,13 @@ class MakePgn(Thread):
     INTERVAL = 2
     __slots__ = ["filepaths", "is_loop", "is_running", "lock", "daemon"]
 
-    def __init__(self, filepaths, is_loop=False, lock=None):
+    def __init__(self, filepaths, is_loop=False, lock=None, interval=2):
         super().__init__()
         self.filepaths = filepaths
         self.is_loop = is_loop
         self.is_running = False
         self.lock = lock
+        self.interval = interval
         self.daemon = True
 
         app_path = get_appdata_path()
@@ -257,7 +267,7 @@ class MakePgn(Thread):
 
             if not self.is_loop:
                 break
-            time.sleep(self.INTERVAL)
+            time.sleep(self.interval)
 
     def stop(self):
         self.is_running = False

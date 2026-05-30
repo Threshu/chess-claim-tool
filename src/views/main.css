@@ -42,6 +42,20 @@ QPushButton#Stop {
     color: #fff;
 }
 
+QPushButton#BoardViewer {
+    background-color: #555555;
+    font-size: 17px;
+    font-weight: bold;
+    color: #fff;
+}
+
+QPushButton#Settings {
+    background-color: #555555;
+    font-size: 17px;
+    font-weight: bold;
+    color: #fff;
+}
+
 QPushButton#sources {
     font-size: 13px;
     padding: 5px;
