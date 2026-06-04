@@ -141,7 +141,7 @@ class BoardViewerWindow(QMainWindow):
         main_widget.setLayout(main_layout)
         self.setCentralWidget(main_widget)
 
-        # LEFT: search + game list
+        # LEFT: search + game list (narrow)
         left_layout = QVBoxLayout()
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("Search by player name or board number...")
@@ -149,30 +149,20 @@ class BoardViewerWindow(QMainWindow):
         left_layout.addWidget(self.search_box)
 
         self.game_list = QListWidget()
-        self.game_list.setMinimumWidth(340)
+        self.game_list.setMinimumWidth(200)
         self.game_list.currentRowChanged.connect(self.on_game_selected)
         left_layout.addWidget(self.game_list)
-        main_layout.addLayout(left_layout, 35)
+        main_layout.addLayout(left_layout, 22)
 
-        # RIGHT: board + pgn + buttons
-        right_layout = QVBoxLayout()
+        # CENTER: board + navigation buttons
+        center_layout = QVBoxLayout()
 
         self.board_label = QLabel()
-        self.board_label.setMinimumSize(380, 380)
+        self.board_label.setMinimumSize(360, 360)
         self.board_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.board_label.setAlignment(Qt.AlignCenter)
-        right_layout.addWidget(self.board_label, stretch=55)
+        center_layout.addWidget(self.board_label)
 
-        self.pgn_view = QTextBrowser()
-        self.pgn_view.setOpenLinks(False)
-        self.pgn_view.anchorClicked.connect(self.on_move_clicked)
-        self._apply_pgn_style()
-        font = self.game_list.font()
-        font.setPointSize(10)
-        self.pgn_view.setFont(font)
-        right_layout.addWidget(self.pgn_view, 45)
-
-        # Navigation buttons — large
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(6)
         self.btn_start = QPushButton("⏮")
@@ -195,8 +185,18 @@ class BoardViewerWindow(QMainWindow):
         btn_layout.addWidget(self.btn_prev)
         btn_layout.addWidget(self.btn_next)
         btn_layout.addWidget(self.btn_end)
-        right_layout.addLayout(btn_layout)
-        main_layout.addLayout(right_layout, 65)
+        center_layout.addLayout(btn_layout)
+        main_layout.addLayout(center_layout, 45)
+
+        # RIGHT: pgn view full height
+        self.pgn_view = QTextBrowser()
+        self.pgn_view.setOpenLinks(False)
+        self.pgn_view.anchorClicked.connect(self.on_move_clicked)
+        self._apply_pgn_style()
+        font = self.game_list.font()
+        font.setPointSize(10)
+        self.pgn_view.setFont(font)
+        main_layout.addWidget(self.pgn_view, 33)
 
     def _apply_pgn_style(self):
         self.pgn_view.document().setDefaultStyleSheet("""
@@ -303,52 +303,66 @@ class BoardViewerWindow(QMainWindow):
                 f'⚠ Early draw ({total // 2} moves)</div>'
             )
 
-        html.append(
-            '<table style="border-collapse:collapse;font-size:10pt;'
-            'width:100%;table-layout:fixed;">'
-        )
-
+        # Build list of rendered move rows: (move_num, white_html, black_html)
+        rows = []
         ply = 0
         move_num = 1
         i = 0
 
         while i < len(moves):
-            html.append('<tr>')
-            html.append(
-                f'<td style="font-weight:bold;color:#555;padding:2px 6px 2px 2px;'
-                f'white-space:nowrap;width:34px;vertical-align:top;">{move_num}.</td>'
-            )
-
-            # White's move
             wm   = moves[i]
             wsan = board.san(wm)
             board.push(wm)
             wc   = self._get_move_claims(board, ply + 1)
-            html.append(
-                f'<td style="padding:2px 10px 2px 2px;white-space:nowrap;'
-                f'vertical-align:top;">{self._fmt_move(wsan, ply, wc, highlight_index)}</td>'
-            )
+            white_html = self._fmt_move(wsan, ply, wc, highlight_index)
             ply += 1
             i   += 1
 
-            # Black's move
             if i < len(moves):
                 bm   = moves[i]
                 bsan = board.san(bm)
                 board.push(bm)
                 bc   = self._get_move_claims(board, ply + 1)
-                html.append(
-                    f'<td style="padding:2px 2px 2px 2px;white-space:nowrap;'
-                    f'vertical-align:top;">{self._fmt_move(bsan, ply, bc, highlight_index)}</td>'
-                )
+                black_html = self._fmt_move(bsan, ply, bc, highlight_index)
                 ply += 1
                 i   += 1
             else:
-                html.append('<td></td>')
+                black_html = ""
 
-            html.append('</tr>')
+            rows.append((move_num, white_html, black_html))
             move_num += 1
 
+        # Split into columns of 30 move-pairs each
+        CHUNK = 30
+        chunks = [rows[j: j + CHUNK] for j in range(0, max(len(rows), 1), CHUNK)]
+
+        html.append('<table style="border-collapse:collapse;width:100%;">')
+        html.append('<tr style="vertical-align:top;">')
+
+        for chunk in chunks:
+            html.append('<td style="padding-right:16px;vertical-align:top;">')
+            html.append(
+                '<table style="border-collapse:collapse;font-size:10pt;">'
+            )
+            for mn, wh, bh in chunk:
+                html.append('<tr>')
+                html.append(
+                    f'<td style="font-weight:bold;color:#555;padding:2px 6px 2px 2px;'
+                    f'white-space:nowrap;width:34px;vertical-align:top;">{mn}.</td>'
+                )
+                html.append(
+                    f'<td style="padding:2px 10px 2px 2px;white-space:nowrap;'
+                    f'vertical-align:top;">{wh}</td>'
+                )
+                html.append(
+                    f'<td style="padding:2px 2px 2px 2px;white-space:nowrap;'
+                    f'vertical-align:top;">{bh}</td>'
+                )
+                html.append('</tr>')
+            html.append('</table>')
+            html.append('</td>')
+
+        html.append('</tr>')
         html.append('</table>')
         return ''.join(html)
 
