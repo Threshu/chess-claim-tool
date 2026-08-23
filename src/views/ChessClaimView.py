@@ -563,6 +563,7 @@ class ChessClaimView(QMainWindow):
         Args:
             event: The exit QEvent.
         """
+        logger.info("main window closeEvent - the window is being closed")
         self._save_geometry()
         try:
             if self.slots.scan_worker.is_running:

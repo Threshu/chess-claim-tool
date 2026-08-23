@@ -44,6 +44,15 @@ if __name__ == '__main__':
     app.set_view(view)
 
     app.do_start()
+
+    """ Pin down who ends the session: a real window close fires closeEvent,
+    lastWindowClosed means the window went away some other way, and aboutToQuit
+    with neither of those means something called quit() directly."""
+    app.lastWindowClosed.connect(lambda: logger.info("signal: lastWindowClosed"))
+    app.aboutToQuit.connect(lambda: logger.info("signal: aboutToQuit"))
+    logger.info("main window visible=%s geometry=%s",
+                view.isVisible(), view.geometry().getRect())
+
     logger.info("entering Qt event loop")
     exit_code = app.exec_()
     logger.info("Qt event loop returned %s", exit_code)
