@@ -30,6 +30,9 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QTreeView, QPushButton, QDesk
 
 from src.Claims import ClaimType
 from src.helpers import resource_path, get_appdata_path, Status
+from src.logging_setup import get_logger, log_exceptions
+
+logger = get_logger("view")
 
 if platform.system() == "Darwin":
     from src.MacNotification import Notification as Notification
@@ -212,6 +215,7 @@ class ChessClaimView(QMainWindow):
         """ Connect the Slots """
         self.slots = slots
 
+    @log_exceptions
     def add_item_to_table(self, entry) -> None:
         """Add new row to the claimsTable. entry is a ClaimEntry object."""
         claim_type = entry.type
@@ -243,6 +247,7 @@ class ChessClaimView(QMainWindow):
         self.claims_table.scrollToTop()
         self.notify(claim_type, players, move)
 
+    @log_exceptions
     def on_claim_clicked(self, index) -> None:
         """Open Board Viewer at the correct game and move when a claim row is clicked."""
         source_index = self.proxy_model.mapToSource(index)
@@ -262,6 +267,7 @@ class ChessClaimView(QMainWindow):
 
         self.slots.open_viewer_for_claim(game_index, move_index)
 
+    @log_exceptions
     def on_table_context_menu(self, pos) -> None:
         selected_rows = {
             self.proxy_model.mapToSource(idx).row()
@@ -369,7 +375,9 @@ class ChessClaimView(QMainWindow):
                                              duration=5,
                                              threaded=True)
             except Exception:
-                pass
+                """ win10toast is unmaintained and throws on repeated/concurrent
+                toasts. Never fatal, but worth seeing in the log."""
+                logger.warning("toast notification failed for %s", claim_type.value, exc_info=True)
 
     def remove_row_by_index(self, index: int) -> None:
         """ Remove element from the claimsTable.

@@ -18,6 +18,10 @@ from PyQt5.QtGui import QPixmap, QPainter, QColor
 from PyQt5.QtCore import Qt, QRectF
 from PyQt5.QtSvg import QSvgRenderer
 
+from src.logging_setup import get_logger, log_exceptions
+
+logger = get_logger("board_viewer")
+
 # Claim types that are low-priority (shown in orange)
 _ORANGE_LABELS = {"2-fold", "55 from start"}
 
@@ -116,6 +120,7 @@ class BoardViewerWindow(QMainWindow):
         self._refresh_pgn_with_highlight()
         self.update_board()
 
+    @log_exceptions
     def on_game_selected(self, arg) -> None:
         row = arg if isinstance(arg, int) else self.game_list.row(arg)
         if row < 0 or row >= len(self.filtered_games):
@@ -225,9 +230,12 @@ class BoardViewerWindow(QMainWindow):
                     self.game_claims[idx] = _scan_game_claims(game)
                     idx += 1
         except Exception as e:
+            logger.exception("could not load %s", self.pgn_path)
             self.game_list.addItem(f"Error loading PGN: {e}")
         self.filtered_games = list(self.games)
+        logger.info("loaded %s game(s) from %s", len(self.games), self.pgn_path)
 
+    @log_exceptions
     def _apply_filter(self) -> None:
         text = self.search_box.text().lower().strip()
         if not text:
@@ -410,12 +418,20 @@ class BoardViewerWindow(QMainWindow):
             with open(pgn_path, "r", encoding="utf-8") as f:
                 text = f.read()
         except Exception:
+            logger.warning("could not re-read %s", pgn_path, exc_info=True)
             return
 
         all_games = []
         pgn_io = io.StringIO(text)
         while True:
-            game = chess.pgn.read_game(pgn_io)
+            try:
+                game = chess.pgn.read_game(pgn_io)
+            except Exception:
+                """ games.pgn is rebuilt by MakePgn while we read it, so a
+                half-written game here is expected rather than exceptional."""
+                logger.warning("stopped parsing %s after %s game(s)",
+                               pgn_path, len(all_games), exc_info=True)
+                break
             if game is None:
                 break
             all_games.append(game)
@@ -514,6 +530,7 @@ class BoardViewerWindow(QMainWindow):
         self.move_index = len(self.move_list)
         self.update_board(); self._refresh_pgn_with_highlight()
 
+    @log_exceptions
     def on_move_clicked(self, url):
         ply = int(url.toString().split("_")[1])
         self.move_index = ply + 1

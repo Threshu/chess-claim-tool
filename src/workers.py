@@ -26,6 +26,9 @@ from chess.pgn import read_game
 from src.Claims import get_players
 from src.DownloadPgn import check_download, download_pgn
 from src.helpers import get_appdata_path, Status
+from src.logging_setup import get_logger
+
+logger = get_logger("workers")
 
 
 class CheckDownload(QRunnable):
@@ -74,24 +77,36 @@ class DownloadGames(QThread):
 
     def run(self) -> None:
         self.is_running = True
+        logger.info("DownloadGames started (interval=%ss, %s url(s))",
+                    self.interval, len(self.downloads))
         while self.is_running:
             for url in self.downloads:
-                status = Status.OK
-                data = download_pgn(url)
-                if not data:
-                    status = Status.ERROR
-
-                self.status_signal.emit(status)
-                filename = self.downloads[url]
+                """ Nothing may escape this loop: an exception leaving run() is
+                raised from C++ and makes PyQt abort the whole process."""
                 try:
-                    with open(filename, "wb") as file:
-                        file.write(data)
-                except (FileNotFoundError, TypeError):
+                    status = Status.OK
+                    data = download_pgn(url)
+                    if not data:
+                        status = Status.ERROR
+                        logger.warning("empty response for %s", url)
+
+                    self.status_signal.emit(status)
+                    filename = self.downloads[url]
+                    try:
+                        with open(filename, "wb") as file:
+                            file.write(data)
+                    except (FileNotFoundError, TypeError):
+                        logger.warning("could not write %s", filename, exc_info=True)
+                        self.status_signal.emit(Status.ERROR)
+                        continue
+                except Exception:
+                    logger.exception("download cycle failed for %s - continuing", url)
                     self.status_signal.emit(Status.ERROR)
-                    continue
             if not self.is_loop:
                 break
             time.sleep(self.interval)
+
+        logger.info("DownloadGames stopped")
 
     def stop(self):
         self.is_running = False
@@ -128,6 +143,7 @@ class Scan(QThread):
         self.is_running = True
         last_size = 0
         time.sleep(1.2)  # For synchronization purposes.
+        logger.info("Scan started (interval=%ss, file=%s)", self.interval, self.filename)
 
         while self.is_running:
             try:
@@ -136,9 +152,17 @@ class Scan(QThread):
                 size_of_pgn = 0
 
             if self.is_file_updated(last_size, size_of_pgn):
+                logger.debug("pgn changed: %s -> %s bytes", last_size, size_of_pgn)
                 self.status_signal.emit(Status.ACTIVE)
                 self.new_move_signal.emit()
-                self.check_pgn()
+
+                """ An exception escaping run() is raised in a Python callable invoked
+                from C++, which makes PyQt abort the whole process. Contain it here so
+                one malformed scan cannot take the app down with it."""
+                try:
+                    self.check_pgn()
+                except Exception:
+                    logger.exception("check_pgn failed - scan continues with next cycle")
 
             self.status_signal.emit(Status.WAIT)
             last_size = size_of_pgn
@@ -147,27 +171,48 @@ class Scan(QThread):
                 break
             time.sleep(self.interval)
 
+        logger.info("Scan stopped")
+
     def check_pgn(self):
         self.lock.acquire()
+        started_at = time.monotonic()
+        game_index = 0
+        claims_found = 0
         try:
             with open(self.filename, encoding="utf-8") as pgn:
-                game_index = 0
                 while self.is_running:
                     game = read_game(pgn)
                     if not game:
                         break
-                    if self.live_pgn_option.isChecked() and game.headers["Result"] != "*":
+                    try:
+                        if self.live_pgn_option.isChecked() and game.headers.get("Result", "*") != "*":
+                            continue
+                        if get_players(game) in self.claims.dont_check:
+                            continue
+                        entries = self.claims.check_game(game, game_index)
+                        for entry in entries:
+                            claims_found += 1
+                            self.add_entry_signal.emit(entry)
+                    except Exception:
+                        """ A single unparsable game (a half-written live pgn, an
+                        illegal move) must not abort the whole pass."""
+                        logger.exception(
+                            "skipping game %s (%s) - could not be checked",
+                            game_index, game.headers.get("White", "?"),
+                        )
+                    finally:
                         game_index += 1
-                        continue
-                    if get_players(game) in self.claims.dont_check:
-                        game_index += 1
-                        continue
-                    entries = self.claims.check_game(game, game_index)
-                    for entry in entries:
-                        self.add_entry_signal.emit(entry)
-                    game_index += 1
         finally:
             self.lock.release()
+
+        elapsed = time.monotonic() - started_at
+        logger.debug("scanned %s games in %.2fs, %s claim(s)", game_index, elapsed, claims_found)
+        if elapsed > self.interval:
+            logger.warning(
+                "scan of %s games took %.2fs, longer than the %ss interval - "
+                "the scan loop is falling behind",
+                game_index, elapsed, self.interval,
+            )
 
     @staticmethod
     def is_file_updated(last_size, current_size):
@@ -249,25 +294,36 @@ class MakePgn(Thread):
 
     def run(self) -> None:
         self.is_running = True
+        logger.info("MakePgn started (interval=%ss, %s source file(s))",
+                    self.interval, len(self.filepaths))
         while self.is_running:
-            data = bytes()
-            for filepath in self.filepaths:
-                try:
-                    with open(filepath, "rb") as in_file:
-                        data += "\n\n".encode("utf-8") + in_file.read()
-                except FileNotFoundError:
-                    continue
+            try:
+                data = bytes()
+                for filepath in self.filepaths:
+                    try:
+                        with open(filepath, "rb") as in_file:
+                            data += "\n\n".encode("utf-8") + in_file.read()
+                    except FileNotFoundError:
+                        continue
 
-            if self.lock:
-                self.lock.acquire()
-            with open(self.filename, "wb") as file:
-                file.write(data)
-            if self.lock:
-                self.lock.release()
+                if self.lock:
+                    self.lock.acquire()
+                try:
+                    """ Without the finally, a failing write (a locked file, a full
+                    disk) would leave the lock held forever and deadlock Scan."""
+                    with open(self.filename, "wb") as file:
+                        file.write(data)
+                finally:
+                    if self.lock:
+                        self.lock.release()
+            except Exception:
+                logger.exception("MakePgn cycle failed - retrying next interval")
 
             if not self.is_loop:
                 break
             time.sleep(self.interval)
+
+        logger.info("MakePgn stopped")
 
     def stop(self):
         self.is_running = False

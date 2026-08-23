@@ -21,6 +21,10 @@ import urllib.request
 from urllib.error import HTTPError, URLError
 import certifi
 
+from src.logging_setup import get_logger
+
+logger = get_logger("download")
+
 
 def check_download(url: str, timeout=4) -> bool:
     """ Checks if the url points to an existing pgn file.
@@ -37,12 +41,27 @@ def check_download(url: str, timeout=4) -> bool:
         ret_code = urllib.request.urlopen(url, timeout=timeout, cafile=certifi.where()).getcode()
     except (HTTPError, URLError, ValueError):
         return False
+    except OSError:
+        logger.warning("check_download failed for %s", url, exc_info=True)
+        return False
     return ret_code == 200
 
 
 def download_pgn(url: str, timeout=10) -> bytes:
+    """ Download a pgn, returning empty bytes on any failure.
+
+    Every error must be contained here. This runs inside DownloadGames.run(), and
+    an exception escaping a QThread's run() is fatal: PyQt aborts the process with
+    no dialog and no traceback once the app is packaged without a console.
+    HTTPError/URLError alone are not enough - a connection reset, a read timeout or
+    a truncated response raises socket.timeout, ConnectionResetError or
+    http.client.IncompleteRead straight out of response.read().
+    """
     try:
         response = urllib.request.urlopen(url, timeout=timeout, cafile=certifi.where())
         return response.read()
     except (HTTPError, URLError):
+        return bytes()
+    except Exception:
+        logger.warning("download of %s failed", url, exc_info=True)
         return bytes()

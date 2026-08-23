@@ -23,8 +23,12 @@ from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QIcon
 from src.helpers import resource_path
+from src.logging_setup import setup_logging, get_logger
 
 if __name__ == '__main__':
+    log_path = setup_logging()
+    logger = get_logger("main")
+
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
 
     app = ChessClaimController()
@@ -40,4 +44,7 @@ if __name__ == '__main__':
     app.set_view(view)
 
     app.do_start()
-    sys.exit(app.exec_())
+    logger.info("entering Qt event loop")
+    exit_code = app.exec_()
+    logger.info("Qt event loop returned %s", exit_code)
+    sys.exit(exit_code)

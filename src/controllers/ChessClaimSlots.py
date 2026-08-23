@@ -19,6 +19,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import json
 import os.path
+import time
 from threading import Lock
 from typing import List
 
@@ -30,6 +31,9 @@ from src.views.settings_view import ClaimSettingsDialog
 from src.helpers import get_appdata_path, Status
 from src.workers import DownloadGames, MakePgn, Scan, Stop
 from src.board_viewer import BoardViewerWindow
+from src.logging_setup import get_logger, log_exceptions
+
+logger = get_logger("slots")
 
 
 class ChessClaimSlots:
@@ -151,14 +155,17 @@ class ChessClaimSlots:
         except Exception:
             pass
 
+    @log_exceptions
     def on_board_viewer_clicked(self) -> None:
         app_path = get_appdata_path()
         pgn_path = os.path.join(app_path, "games.pgn")
 
         if not os.path.exists(pgn_path):
+            logger.warning("Board Viewer: %s does not exist yet", pgn_path)
             return
 
         if self.board_viewer is None:
+            logger.info("Board Viewer: creating window from %s", pgn_path)
             self.board_viewer = BoardViewerWindow(pgn_path=pgn_path)
         else:
             self.board_viewer.reload_pgn(pgn_path)
@@ -167,6 +174,7 @@ class ChessClaimSlots:
         self.board_viewer.show()
         self.board_viewer.raise_()
 
+    @log_exceptions
     def open_viewer_for_claim(self, game_index: int, move_index: int) -> None:
         app_path = get_appdata_path()
         pgn_path = os.path.join(app_path, "games.pgn")
@@ -182,18 +190,36 @@ class ChessClaimSlots:
             self.board_viewer.load_game_at_index(game_index)
             self.board_viewer.jump_to_move(move_index)
         except Exception:
+            logger.exception("could not open viewer at game %s move %s", game_index, move_index)
             return
 
         self.board_viewer.show()
         self.board_viewer.raise_()
 
+    @log_exceptions
     def on_new_move(self) -> None:
+        """ Refresh the Board Viewer whenever games.pgn changes.
+
+        Runs on every scan cycle the viewer is open for, and re-parses the whole
+        pgn each time, so it is timed: if it outgrows the scan interval the GUI
+        thread is the bottleneck.
+        """
         if self.board_viewer is None:
             return
 
         app_path = get_appdata_path()
         pgn_path = os.path.join(app_path, "games.pgn")
+
+        started_at = time.monotonic()
         self.board_viewer.reload_pgn(pgn_path)
+        elapsed = time.monotonic() - started_at
+
+        logger.debug("Board Viewer reload took %.2fs", elapsed)
+        if elapsed > 1.0:
+            logger.warning(
+                "Board Viewer reload took %.2fs on the GUI thread - the window "
+                "is unresponsive for that long on every scan cycle", elapsed,
+            )
 
     def on_stop_disable_status(self) -> None:
         """ Disables the "Scan" & "Stop" Buttons and the statusBar.
@@ -226,7 +252,10 @@ class ChessClaimSlots:
         else:
             self.view.set_sources_status(Status.ERROR)
 
-    def update_claims_table(self, entry: list) -> None:
+    @log_exceptions
+    def update_claims_table(self, entry) -> None:
+        logger.info("claim: %s | board %s | %s | move %s",
+                    entry.type.name, entry.board_number, entry.players, entry.move)
         self.view.add_item_to_table(entry)
 
     def update_download_status(self, status: Status) -> None:
