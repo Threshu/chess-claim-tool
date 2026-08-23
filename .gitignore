@@ -8,3 +8,4 @@ build/dist/
 .python-version
 __pycache__
 .idea
+chess-claim-tool.log

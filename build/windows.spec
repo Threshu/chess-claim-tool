@@ -36,7 +36,7 @@ exe = EXE(
     a.scripts,
     a.binaries,
     a.datas,
-    name='Chess Claim Tool',
+    name='cct_by_sbm',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

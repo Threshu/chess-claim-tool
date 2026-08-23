@@ -11,6 +11,12 @@ otherwise leave no trace when the app runs without a console (a built .exe):
      normally go to a stderr nobody reads.
   3. Hard native crashes (access violations), via faulthandler.
 
+Everything lands in ONE file, chess-claim-tool.log, sitting next to the
+executable so it can be collected by just zipping the program folder. When the
+program folder is read-only (an install under Program Files) it falls back to
+the app data directory. The file never multiplies into .log.1/.log.2 backups:
+once it hits the size cap the older half is dropped in place.
+
 Also writes a session marker on start and a clean-exit marker via atexit, so a
 log that ends without "session end" is by definition a crash.
 
@@ -43,19 +49,88 @@ from datetime import datetime
 from src.helpers import get_appdata_path
 
 LOGGER_NAME = "chess_claim_tool"
-_MAX_BYTES = 2 * 1024 * 1024
-_BACKUP_COUNT = 5
+LOG_FILENAME = "chess-claim-tool.log"
+_MAX_BYTES = 5 * 1024 * 1024
 
 # Kept at module scope so the fd stays open for faulthandler's lifetime.
 _native_crash_file = None
 _is_configured = False
 
 
+class SingleFileHandler(logging.handlers.BaseRotatingHandler):
+    """ Size-capped handler that never produces a second file.
+
+    RotatingFileHandler cannot do this: with backupCount=0 its doRollover()
+    reopens the file in append mode and the log grows without bound, and with
+    backupCount>0 it spawns .log.1, .log.2 and so on. Here the cap is enforced
+    by dropping the oldest half of the file in place, which keeps recent
+    history - the part that explains a crash - while the path stays constant.
+    """
+
+    def __init__(self, filename, max_bytes, encoding="utf-8"):
+        super().__init__(filename, mode="a", encoding=encoding, delay=False)
+        self.max_bytes = max_bytes
+
+    def shouldRollover(self, record):
+        if self.stream is None:
+            self.stream = self._open()
+        if self.max_bytes <= 0:
+            return False
+        self.stream.seek(0, os.SEEK_END)
+        return self.stream.tell() + len(self.format(record)) >= self.max_bytes
+
+    def doRollover(self):
+        """ Halve the file in place, keeping the newest lines. """
+        if self.stream:
+            self.stream.close()
+            self.stream = None
+        try:
+            with open(self.baseFilename, "rb") as f:
+                f.seek(-(self.max_bytes // 2), os.SEEK_END)
+                f.readline()  # discard the partial line we landed in
+                tail = f.read()
+            with open(self.baseFilename, "wb") as f:
+                f.write(b"--- older entries dropped to keep a single capped log file ---\r\n")
+                f.write(tail)
+        except Exception:
+            """ Diagnostics must never take the app down. Worst case the cap
+            is not applied on this pass and we try again on the next record."""
+            pass
+        self.stream = self._open()
+
+
+def _is_writable(directory: str) -> bool:
+    """ Probe by actually writing: os.access lies on Windows. """
+    probe = os.path.join(directory, ".write-test")
+    try:
+        os.makedirs(directory, exist_ok=True)
+        with open(probe, "w") as f:
+            f.write("")
+        os.remove(probe)
+        return True
+    except Exception:
+        return False
+
+
 def get_log_dir() -> str:
-    """ Directory holding the log files. Created if missing. """
-    log_dir = os.path.join(get_appdata_path(), "logs")
-    os.makedirs(log_dir, exist_ok=True)
-    return log_dir
+    """ Directory holding the log file.
+
+    Next to the executable, so collecting logs means zipping the program
+    folder. Falls back to the app data directory when that is not writable,
+    which is the normal case for an install under Program Files.
+    """
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        # src/logging_setup.py -> the project root next to main.py
+        exe_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    if _is_writable(exe_dir):
+        return exe_dir
+
+    fallback = os.path.join(get_appdata_path(), "logs")
+    os.makedirs(fallback, exist_ok=True)
+    return fallback
 
 
 def get_logger(name: str = None) -> logging.Logger:
@@ -81,7 +156,7 @@ def setup_logging(level: int = logging.INFO) -> str:
     global _native_crash_file, _is_configured
 
     log_dir = get_log_dir()
-    log_path = os.path.join(log_dir, "chess-claim-tool.log")
+    log_path = os.path.join(log_dir, LOG_FILENAME)
 
     if _is_configured:
         return log_path
@@ -90,9 +165,7 @@ def setup_logging(level: int = logging.INFO) -> str:
     logger.setLevel(level)
     logger.propagate = False
 
-    file_handler = logging.handlers.RotatingFileHandler(
-        log_path, maxBytes=_MAX_BYTES, backupCount=_BACKUP_COUNT, encoding="utf-8"
-    )
+    file_handler = SingleFileHandler(log_path, max_bytes=_MAX_BYTES)
     file_handler.setFormatter(logging.Formatter(
         "%(asctime)s %(levelname)-8s [%(threadName)s] %(name)s: %(message)s"
     ))
@@ -106,7 +179,7 @@ def setup_logging(level: int = logging.INFO) -> str:
 
     _install_python_excepthook()
     _install_thread_excepthook()
-    _install_faulthandler(log_dir)
+    _install_faulthandler(log_path)
     _install_qt_message_handler()
     atexit.register(_log_session_end)
 
@@ -165,15 +238,20 @@ def _install_thread_excepthook() -> None:
     threading.excepthook = handler
 
 
-def _install_faulthandler(log_dir: str) -> None:
-    """ Dump the native stack on a hard crash (access violation, abort). """
+def _install_faulthandler(log_path: str) -> None:
+    """ Dump the native stack on a hard crash (access violation, abort).
+
+    Writes into the same single log file through its own append-mode handle.
+    faulthandler needs a real fd it can use from a signal handler, so it cannot
+    go through logging. Append mode means every write lands at the current end
+    of the file, so this stays correct even after the handler trims the log.
+    """
     global _native_crash_file
     try:
-        _native_crash_file = open(
-            os.path.join(log_dir, "crash-native.log"), "a", encoding="utf-8"
-        )
+        _native_crash_file = open(log_path, "a", encoding="utf-8")
         _native_crash_file.write(
-            f"\n=== faulthandler armed {datetime.now().isoformat(timespec='seconds')} ===\n"
+            f"--- faulthandler armed {datetime.now().isoformat(timespec='seconds')} "
+            f"(a native stack dump below this line means a hard crash) ---\n"
         )
         _native_crash_file.flush()
         faulthandler.enable(file=_native_crash_file, all_threads=True)
