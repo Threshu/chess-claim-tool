@@ -38,6 +38,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 import atexit
 import faulthandler
 import functools
+import inspect
 import logging
 import logging.handlers
 import os
@@ -311,8 +312,20 @@ def log_exceptions(func):
     """
     logger = get_logger("slot")
 
+    """ A slot is allowed to accept fewer arguments than its signal carries -
+    Qt drops the extras - but PyQt decides how many to drop by reading the
+    arity of whatever it was handed. Handed this wrapper it reads *args,
+    concludes the slot takes everything, and drops nothing: clicked(bool)
+    then reaches a self-only slot as a TypeError. So do the trimming here,
+    exactly as PyQt would have done on the undecorated function."""
+    code = getattr(func, "__code__", None)
+    accepts_varargs = bool(code.co_flags & inspect.CO_VARARGS) if code else True
+    max_positional = code.co_argcount if code else None
+
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
+        if not accepts_varargs and len(args) > max_positional:
+            args = args[:max_positional]
         try:
             return func(*args, **kwargs)
         except Exception:

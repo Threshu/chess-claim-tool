@@ -18,7 +18,7 @@ a = Analysis(
         ("../icons/logo.ico",        "."),
         ("../src/views/main.css",    "src/views"),
     ],
-    hiddenimports=['win10toast', 'PyQt5.QtSvg'],
+    hiddenimports=['windows_toasts', 'PyQt5.QtSvg'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

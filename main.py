@@ -17,18 +17,27 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 import sys
-from src.controllers.ChessClaimController import ChessClaimController
-from src.views.ChessClaimView import ChessClaimView
-from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QIcon
-from src.helpers import resource_path
+
 from src.logging_setup import setup_logging, get_logger
 
-if __name__ == '__main__':
-    log_path = setup_logging()
-    logger = get_logger("main")
+""" Logging is configured before anything heavy is imported: a missing or
+broken dependency raises at import time, long before the code below runs, and
+a log that only starts afterwards cannot record it. Keep this block first. """
+log_path = setup_logging()
+logger = get_logger("main")
 
+try:
+    from src.controllers.ChessClaimController import ChessClaimController
+    from src.views.ChessClaimView import ChessClaimView
+    from PyQt5.QtWidgets import QApplication
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QIcon
+    from src.helpers import resource_path
+except Exception:
+    logger.critical("startup imports failed - the app cannot launch", exc_info=True)
+    raise
+
+if __name__ == '__main__':
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
 
     app = ChessClaimController()

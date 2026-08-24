@@ -37,7 +37,8 @@ logger = get_logger("view")
 if platform.system() == "Darwin":
     from src.MacNotification import Notification as Notification
 elif platform.system() == "Windows":
-    from win10toast import ToastNotifier as Notification
+    from windows_toasts import (Toast, ToastDisplayImage, ToastDuration,
+                                ToastImagePosition, WindowsToaster)
 
 
 class ClaimsFilterProxy(QSortFilterProxyModel):
@@ -104,7 +105,23 @@ class ChessClaimView(QMainWindow):
         self.status_bar = QStatusBar()
         self.about_dialog = AboutDialog()
 
-        self.notification = Notification()
+        self.notification = self.create_notifier()
+
+    @staticmethod
+    def create_notifier():
+        """ Build the OS notifier, or None when this platform cannot toast.
+
+        Never raises: WindowsToaster rejects anything older than Windows 10,
+        and losing notifications is a lot better than losing the scan.
+        """
+        try:
+            if platform.system() == "Darwin":
+                return Notification()
+            if platform.system() == "Windows":
+                return WindowsToaster("Chess Claim Tool")
+        except Exception:
+            logger.warning("no OS notifier available on this system", exc_info=True)
+        return None
 
     def center(self) -> None:
         """ Centers the window on the screen """
@@ -364,20 +381,25 @@ class ChessClaimView(QMainWindow):
             players: The names of the players.
             move: With which move the draw is valid.
         """
-        if platform.system() == "Darwin":
-            self.notification.clearNotifications()
-            self.notification.notify(claim_type.value, players, move)
-        elif platform.system() == "Windows":
-            try:
-                self.notification.show_toast(claim_type.value,
-                                             f"{players} \n {move}",
-                                             icon_path=resource_path("logo.ico"),
-                                             duration=5,
-                                             threaded=True)
-            except Exception:
-                """ win10toast is unmaintained and throws on repeated/concurrent
-                toasts. Never fatal, but worth seeing in the log."""
-                logger.warning("toast notification failed for %s", claim_type.value, exc_info=True)
+        if self.notification is None:
+            return
+
+        try:
+            if platform.system() == "Darwin":
+                self.notification.clearNotifications()
+                self.notification.notify(claim_type.value, players, move)
+            elif platform.system() == "Windows":
+                toast = Toast(text_fields=[claim_type.value, f"{players}\n{move}"],
+                              duration=ToastDuration.Short)
+                toast.AddImage(ToastDisplayImage.fromPath(
+                    resource_path("logo.png"),
+                    altText="Chess Claim Tool",
+                    position=ToastImagePosition.AppLogo))
+                self.notification.show_toast(toast)
+        except Exception:
+            """ A notification that fails must never take down a scan running
+            at a live tournament. Never fatal, but worth seeing in the log."""
+            logger.warning("notification failed for %s", claim_type.value, exc_info=True)
 
     def remove_row_by_index(self, index: int) -> None:
         """ Remove element from the claimsTable.

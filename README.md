@@ -35,9 +35,9 @@ pip install pyqt5
 ```
 pip install python-chess
 ```
-* [Windows-10-Toast-Notifications](https://github.com/jithurjacob/Windows-10-Toast-Notifications)
+* [Windows-Toasts](https://github.com/DatGuy1/Windows-Toasts) (Windows only)
 ```
-pip install win10toast
+pip install windows-toasts
 ```
 
 # Usage
