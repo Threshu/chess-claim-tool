@@ -17,6 +17,7 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
+import ssl
 import urllib.request
 from urllib.error import HTTPError, URLError
 import certifi
@@ -24,6 +25,22 @@ import certifi
 from src.logging_setup import get_logger
 
 logger = get_logger("download")
+
+_ssl_context = None
+
+
+def get_ssl_context():
+    """ The certifi CA bundle as an SSLContext, built once and reused.
+
+    urlopen's cafile argument was deprecated in Python 3.6 and removed in 3.13,
+    where passing it raises TypeError; context is the replacement. Building the
+    context parses the whole CA bundle, so it is cached - the download workers
+    poll every couple of seconds for hours on end.
+    """
+    global _ssl_context
+    if _ssl_context is None:
+        _ssl_context = ssl.create_default_context(cafile=certifi.where())
+    return _ssl_context
 
 
 def check_download(url: str, timeout=4) -> bool:
@@ -38,7 +55,7 @@ def check_download(url: str, timeout=4) -> bool:
         return False
 
     try:
-        ret_code = urllib.request.urlopen(url, timeout=timeout, cafile=certifi.where()).getcode()
+        ret_code = urllib.request.urlopen(url, timeout=timeout, context=get_ssl_context()).getcode()
     except (HTTPError, URLError, ValueError):
         return False
     except OSError:
@@ -58,7 +75,7 @@ def download_pgn(url: str, timeout=10) -> bytes:
     http.client.IncompleteRead straight out of response.read().
     """
     try:
-        response = urllib.request.urlopen(url, timeout=timeout, cafile=certifi.where())
+        response = urllib.request.urlopen(url, timeout=timeout, context=get_ssl_context())
         return response.read()
     except (HTTPError, URLError):
         return bytes()
