@@ -31,6 +31,7 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QTreeView, QPushButton, QDesk
 from src.Claims import ClaimType
 from src.helpers import resource_path, get_appdata_path, Status
 from src.logging_setup import get_logger, log_exceptions
+from src.ntfy import NtfyConfig, send_claim
 
 logger = get_logger("view")
 
@@ -106,6 +107,7 @@ class ChessClaimView(QMainWindow):
         self.about_dialog = AboutDialog()
 
         self.notification = self.create_notifier()
+        self.ntfy_config = NtfyConfig.load()
 
     @staticmethod
     def create_notifier():
@@ -381,6 +383,10 @@ class ChessClaimView(QMainWindow):
             players: The names of the players.
             move: With which move the draw is valid.
         """
+        """ Queued first and off-thread, so the arbiter's phone is not waiting
+        behind the desktop toast. """
+        send_claim(self.ntfy_config, claim_type.value, players, move)
+
         if self.notification is None:
             return
 

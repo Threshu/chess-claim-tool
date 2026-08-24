@@ -130,12 +130,18 @@ class ChessClaimSlots:
     def on_settings_clicked(self) -> None:
         dialog = ClaimSettingsDialog(
             enabled_claims=self.claims_model.enabled_claims,
+            ntfy_config=self.view.ntfy_config,
             parent=self.view,
         )
         if dialog.exec_() == ClaimSettingsDialog.Accepted:
             enabled = dialog.get_enabled_claims()
             self.claims_model.set_enabled_claims(enabled)
             self._save_claim_settings(enabled)
+
+            ntfy_config = dialog.get_ntfy_config()
+            ntfy_config.save()
+            self.view.ntfy_config = ntfy_config
+            logger.info("ntfy notifications %s", "enabled" if ntfy_config.enabled else "disabled")
 
     def _load_claim_settings(self) -> set:
         path = os.path.join(get_appdata_path(), "claim_settings.json")
