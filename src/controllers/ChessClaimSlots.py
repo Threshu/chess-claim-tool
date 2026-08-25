@@ -29,6 +29,7 @@ from src.controllers.SourceDialogController import SourceDialogController
 from src.views.SourceDialogView import AddSourceDialog
 from src.views.settings_view import ClaimSettingsDialog
 from src.helpers import get_appdata_path, Status
+from src.ntfy import send_code
 from src.workers import DownloadGames, MakePgn, Scan, Stop
 from src.board_viewer import BoardViewerWindow
 from src.logging_setup import get_logger, log_exceptions
@@ -56,6 +57,7 @@ class ChessClaimSlots:
         self.download_worker = None
         self.scan_worker = None
         self.board_viewer = None
+        self._pgn_error_notified = False
 
         # Load and apply persisted claim settings
         self.claims_model.set_enabled_claims(self._load_claim_settings())
@@ -266,6 +268,17 @@ class ChessClaimSlots:
 
     def update_download_status(self, status: Status) -> None:
         self.view.set_download_status(status)
+        if status is Status.ERROR:
+            if not self._pgn_error_notified:
+                send_code(
+                    self.view.ntfy_config,
+                    "ERR_PGN",
+                    white_player="PGN source",
+                    black_player="download failed",
+                )
+                self._pgn_error_notified = True
+        elif status is Status.OK:
+            self._pgn_error_notified = False
 
     def update_bar_scan_status(self, status: Status) -> None:
         self.view.set_scan_status(status)

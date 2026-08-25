@@ -1,0 +1,118 @@
+{
+  "serverUrl": "https://ntfy.sh",
+  "topic": "cct-changeme",
+  "token": "",
+  "enabled": true,
+  "notifications": {
+    "3fr": {
+      "code": "3FR",
+      "name": "3-Fold Repetition (Trzykrotne powtórzenie)",
+      "enabled": true,
+      "priority": 3,
+      "titleTemplate": "{code} #{board}",
+      "bodyTemplate": "{white} - {black}",
+      "tags": "",
+      "sound": "default"
+    },
+    "5fr": {
+      "code": "5FR",
+      "name": "5-Fold Repetition (5-krotne powtórzenie - Auto Remis)",
+      "enabled": true,
+      "priority": 5,
+      "titleTemplate": "{code} #{board}",
+      "bodyTemplate": "{white} - {black}",
+      "tags": "",
+      "sound": "default"
+    },
+    "50m": {
+      "code": "50M",
+      "name": "50-Move Rule (Reguła 50 posunięć)",
+      "enabled": true,
+      "priority": 1,
+      "titleTemplate": "{code} #{board}",
+      "bodyTemplate": "{white} - {black}",
+      "tags": "",
+      "sound": "default"
+    },
+    "75m": {
+      "code": "75M",
+      "name": "75-Move Rule (Reguła 75 posunięć - Auto Remis)",
+      "enabled": true,
+      "priority": 5,
+      "titleTemplate": "{code} #{board}",
+      "bodyTemplate": "{white} - {black}",
+      "tags": "",
+      "sound": "default"
+    },
+    "55m": {
+      "code": "55M",
+      "name": "55 Moves from start (55 posunięć od początku)",
+      "enabled": true,
+      "priority": 3,
+      "titleTemplate": "{code} #{board}",
+      "bodyTemplate": "{white} - {black}",
+      "tags": "",
+      "sound": "default"
+    },
+    "insm": {
+      "code": "INSM",
+      "name": "Niewystarczający materiał (Insufficient Material)",
+      "enabled": true,
+      "priority": 5,
+      "titleTemplate": "{code} #{board}",
+      "bodyTemplate": "{white} - {black}",
+      "tags": "",
+      "sound": "default"
+    },
+    "agr": {
+      "code": "AGR",
+      "name": "Zgoda na remis (Draw Agreement)",
+      "enabled": false,
+      "priority": 2,
+      "titleTemplate": "{code} #{board}",
+      "bodyTemplate": "{white} - {black}",
+      "tags": "",
+      "sound": "default"
+    },
+    "time": {
+      "code": "TIME",
+      "name": "Przekroczenie czasu (Timeout / Flag)",
+      "enabled": true,
+      "priority": 5,
+      "titleTemplate": "{code} #{board}",
+      "bodyTemplate": "{white} - {black}",
+      "tags": "",
+      "sound": "default"
+    },
+    "arbiter": {
+      "code": "ARBITER",
+      "name": "Wezwanie sędziego na stół",
+      "enabled": true,
+      "priority": 5,
+      "titleTemplate": "{code} #{board}",
+      "bodyTemplate": "{white} - {black}",
+      "tags": "",
+      "sound": "default"
+    },
+    "err_pgn": {
+      "code": "ERR_PGN",
+      "name": "Błąd pobierania PGN / Rozłączenie",
+      "enabled": false,
+      "priority": 1,
+      "titleTemplate": "{code} #{board}",
+      "bodyTemplate": "{white} - {black}",
+      "tags": "",
+      "sound": "default"
+    },
+    "err_dgt": {
+      "code": "ERR_DGT",
+      "name": "Błąd połączenia z deską DGT",
+      "enabled": true,
+      "priority": 5,
+      "titleTemplate": "{code} #{board}",
+      "bodyTemplate": "{white} - {black}",
+      "tags": "",
+      "sound": "default"
+    }
+  }
+}

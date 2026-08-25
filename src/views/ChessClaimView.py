@@ -18,7 +18,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 import json
 import os
-import platform
 from datetime import datetime
 from typing import Optional, Callable
 
@@ -29,17 +28,12 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QTreeView, QPushButton, QDesk
                              QDialog, QLineEdit, QMenu, QSpinBox)
 
 from src.Claims import ClaimType
+from src.desktop_notifier import DesktopNotifier, DesktopNotification
 from src.helpers import resource_path, get_appdata_path, Status
 from src.logging_setup import get_logger, log_exceptions
 from src.ntfy import NtfyConfig, send_claim
 
 logger = get_logger("view")
-
-if platform.system() == "Darwin":
-    from src.MacNotification import Notification as Notification
-elif platform.system() == "Windows":
-    from windows_toasts import (Toast, ToastDisplayImage, ToastDuration,
-                                ToastImagePosition, WindowsToaster)
 
 
 class ClaimsFilterProxy(QSortFilterProxyModel):
@@ -76,7 +70,8 @@ class ChessClaimView(QMainWindow):
     ICON_SIZE = 16
     __slots__ = ["slots", "claims_table", "live_pgn_option", "claims_table_model", "proxy_model", "filter_edit",
                  "button_box", "ok_pixmap", "error_pixmap", "source_label", "source_image", "download_label",
-                 "download_image", "scan_label", "scan_image", "spinner", "status_bar", "about_dialog", "notification"]
+                 "download_image", "scan_label", "scan_image", "spinner", "status_bar", "about_dialog",
+                 "notification", "ntfy_config", "desktop_notifier"]
 
     def __init__(self) -> None:
         super().__init__()
@@ -106,24 +101,8 @@ class ChessClaimView(QMainWindow):
         self.status_bar = QStatusBar()
         self.about_dialog = AboutDialog()
 
-        self.notification = self.create_notifier()
         self.ntfy_config = NtfyConfig.load()
-
-    @staticmethod
-    def create_notifier():
-        """ Build the OS notifier, or None when this platform cannot toast.
-
-        Never raises: WindowsToaster rejects anything older than Windows 10,
-        and losing notifications is a lot better than losing the scan.
-        """
-        try:
-            if platform.system() == "Darwin":
-                return Notification()
-            if platform.system() == "Windows":
-                return WindowsToaster("Chess Claim Tool")
-        except Exception:
-            logger.warning("no OS notifier available on this system", exc_info=True)
-        return None
+        self.desktop_notifier = DesktopNotifier(app_name="Chess Claim Tool")
 
     def center(self) -> None:
         """ Centers the window on the screen """
@@ -264,7 +243,7 @@ class ChessClaimView(QMainWindow):
 
         self.resize_claims_table()
         self.claims_table.scrollToTop()
-        self.notify(claim_type, players, move)
+        self.notify(entry)
 
     @log_exceptions
     def on_claim_clicked(self, index) -> None:
@@ -375,37 +354,32 @@ class ChessClaimView(QMainWindow):
 
         return q_item
 
-    def notify(self, claim_type: ClaimType, players: str, move: str) -> None:
-        """ Send notification depending on the OS.
-        Args:
-            claim_type: The type of the draw (3 Fold Repetition, 5 Fold Repetition,
-                                        50 Moves Rule, 75 Moves Rule).
-            players: The names of the players.
-            move: With which move the draw is valid.
-        """
-        """ Queued first and off-thread, so the arbiter's phone is not waiting
-        behind the desktop toast. """
-        send_claim(self.ntfy_config, claim_type.value, players, move)
+    def notify(self, entry) -> None:
+        """Send notifications for a new claim entry.
 
-        if self.notification is None:
+        Desktop (OS) notifications: always for every detected claim entry.
+        ntfy notifications: only if enabled in the ntfy tab config.
+        """
+        try:
+            claim_type = entry.type
+            board_number = entry.board_number
+            players = entry.players
+            move = entry.move
+            comment = getattr(entry, "comment", "") or ""
+        except Exception:
+            # Defensive: never break the GUI update on notification failures.
+            logger.warning("notify(): invalid entry object", exc_info=True)
             return
 
-        try:
-            if platform.system() == "Darwin":
-                self.notification.clearNotifications()
-                self.notification.notify(claim_type.value, players, move)
-            elif platform.system() == "Windows":
-                toast = Toast(text_fields=[claim_type.value, f"{players}\n{move}"],
-                              duration=ToastDuration.Short)
-                toast.AddImage(ToastDisplayImage.fromPath(
-                    resource_path("logo.png"),
-                    altText="Chess Claim Tool",
-                    position=ToastImagePosition.AppLogo))
-                self.notification.show_toast(toast)
-        except Exception:
-            """ A notification that fails must never take down a scan running
-            at a live tournament. Never fatal, but worth seeing in the log."""
-            logger.warning("notification failed for %s", claim_type.value, exc_info=True)
+        # Desktop toast (Windows/macOS). Independent from ntfy settings.
+        title = f"{claim_type.value} #{board_number}".strip()
+        body = f"{players}\nMove: {move}".strip()
+        if comment:
+            body = f"{body}\n{comment}"
+        self.desktop_notifier.notify(DesktopNotification(title=title, body=body))
+
+        # Phone/watch via ntfy (filtered by ntfy tab settings).
+        send_claim(self.ntfy_config, claim_type, board_number, players, move)
 
     def remove_row_by_index(self, index: int) -> None:
         """ Remove element from the claimsTable.

@@ -183,10 +183,25 @@ class Claims:
 
     @staticmethod
     def get_board_number(game: Any) -> str:
+        """Return a board identifier shown in UI and used for notifications.
+
+        Many tournament PGNs do not have a `Board` header and encode it as
+        `Round` in the form `round.board` (e.g. `3.4`). In that case we show the
+        board part only (`4`).
+        """
+        value = ""
         try:
-            return str(game.headers["Board"])
+            value = str(game.headers["Board"])
         except KeyError:
-            return str(game.headers["Round"])
+            value = str(game.headers.get("Round", ""))
+
+        value = (value or "").strip()
+        if "." in value:
+            # Typical convention: ROUND.BOARD -> keep BOARD
+            parts = [p for p in value.split(".") if p]
+            if parts:
+                return parts[-1]
+        return value
 
 
 class ClaimType(Enum):

@@ -1,17 +1,9 @@
 """
 Chess Claim Tool: ntfy
 
-Pushes claims to the arbiter's phone (and from there to their watch) through
-ntfy - a pub/sub service where publishing is a single HTTP POST to a topic URL
-and every subscribed device gets a notification.
-
-The topic name is the only credential on the public server: anyone who knows it
-can read the claims and publish to them. So a topic is generated at random the
-first time rather than left to a guessable default.
-
-Sending happens on a worker thread. A claim arrives on the GUI thread, and the
-tournament network is known to stall mid-request - a synchronous POST there
-would freeze the window for the duration of the timeout.
+Publishes claims through ntfy using ntfy_notifier.py and ntfy_config.json
+(generated from the configuration panel). Sending happens on a worker thread
+so a stalled tournament network cannot freeze the window.
 
 Copyright (C) 2026 Chess Claim Tool contributors
 
@@ -19,163 +11,258 @@ This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 3 of the License, or
 any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
-import json
 import os
-import secrets
-import urllib.request
-from urllib.error import HTTPError, URLError
+import sys
 
 from PyQt5.QtCore import QRunnable, QThreadPool
 
-from src.DownloadPgn import get_ssl_context
+from ntfy_notifier import DEFAULT_CONFIG, NtfyNotifier
+from src.Claims import ClaimType
 from src.helpers import get_appdata_path
 from src.logging_setup import get_logger
 
 logger = get_logger("ntfy")
 
-SETTINGS_FILENAME = "ntfy_settings.json"
+CONFIG_FILENAME = "ntfy_config.json"
+LEGACY_SETTINGS_FILENAME = "ntfy_settings.json"
 DEFAULT_SERVER = "https://ntfy.sh"
-SEND_TIMEOUT = 5
+
+CLAIM_TYPE_TO_CODE = {
+    ClaimType.THREEFOLD: "3FR",
+    ClaimType.FIVEFOLD: "5FR",
+    ClaimType.FIFTY_MOVES: "50M",
+    ClaimType.SEVENTYFIVE_MOVES: "75M",
+    ClaimType.FIFTY_MOVES_FROM_START: "55M",
+    ClaimType.EARLY_DRAW: "AGR",
+}
 
 
 def generate_topic() -> str:
-    """ A topic nobody else will land on by accident or by guessing. """
+    import secrets
     return f"cct-{secrets.token_hex(6)}"
 
 
-class NtfyConfig:
-    """ Where to publish, and whether to publish at all. """
-
-    __slots__ = ["enabled", "server", "topic"]
-
-    def __init__(self, enabled: bool = False, server: str = DEFAULT_SERVER, topic: str = ""):
-        self.enabled = enabled
-        self.server = server.rstrip("/") or DEFAULT_SERVER
-        self.topic = topic.strip() or generate_topic()
-
-    @property
-    def url(self) -> str:
-        return f"{self.server}/{self.topic}"
-
-    @classmethod
-    def load(cls) -> "NtfyConfig":
-        """ Read the saved config, falling back to a fresh disabled one. """
-        path = os.path.join(get_appdata_path(), SETTINGS_FILENAME)
-        try:
-            with open(path) as f:
-                data = json.load(f)
-            return cls(
-                enabled=bool(data.get("enabled", False)),
-                server=str(data.get("server") or DEFAULT_SERVER),
-                topic=str(data.get("topic") or ""),
-            )
-        except Exception:
-            """ No file yet on first run, which is the normal case. """
-            return cls()
-
-    def save(self) -> None:
-        path = os.path.join(get_appdata_path(), SETTINGS_FILENAME)
-        try:
-            with open(path, "w") as f:
-                json.dump({"enabled": self.enabled, "server": self.server, "topic": self.topic},
-                          f, indent=2)
-        except Exception:
-            logger.warning("could not save ntfy settings to %s", path, exc_info=True)
-
-
-CLAIM_PRIORITY = "5"
-
-
-def _publish(url: str, title: str, body: str, priority: str = CLAIM_PRIORITY,
-             tags: str = "chess_pawn") -> None:
-    """ POST one notification. Raises on failure; callers decide what that means.
-
-    ntfy carries the title in a header, and headers are ASCII only, so anything
-    outside it is stripped there. The body is sent as UTF-8 and keeps accents,
-    which is where the player names go.
-
-    Priority decides whether the phone interrupts. ntfy routes each priority to
-    its own Android notification channel, and only 4 and 5 get a channel that
-    pops up on screen with sound - 3 and below land silently in the drawer. An
-    arbiter who has to open an app to find out about a claim has not been
-    notified, so claims go out at 5.
-    """
-    request = urllib.request.Request(
-        url,
-        data=body.encode("utf-8"),
-        headers={
-            "Title": title.encode("ascii", "ignore").decode("ascii"),
-            "Priority": priority,
-            "Tags": tags,
-        },
-        method="POST",
-    )
-    urllib.request.urlopen(request, timeout=SEND_TIMEOUT, context=get_ssl_context()).read()
-
-
-def send_test(config: NtfyConfig) -> str:
-    """ Publish a test notification, synchronously, for the settings dialog.
-
-    Sent at the same priority as a real claim: the point of the test is to show
-    exactly how the phone will behave when a claim fires, and a quieter test
-    would prove nothing about the case that matters.
-
-    Returns:
-        An empty string on success, otherwise a message fit to show the user.
-    """
-    try:
-        _publish(config.url, "Chess Claim Tool",
-                 "Test notification - this is how a claim will look.",
-                 priority=CLAIM_PRIORITY, tags="white_check_mark")
-    except HTTPError as error:
-        return f"Server rejected the message (HTTP {error.code})."
-    except URLError as error:
-        return f"Could not reach {config.server} ({error.reason})."
-    except Exception as error:
-        logger.warning("ntfy test send failed", exc_info=True)
-        return f"Send failed: {error}"
-
-    logger.info("ntfy test sent to %s", config.url)
+def _meipass() -> str:
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return sys._MEIPASS
     return ""
 
 
-class _SendClaim(QRunnable):
-    """ One claim, published off the GUI thread. """
+def appdata_config_path() -> str:
+    return os.path.join(get_appdata_path(), CONFIG_FILENAME)
 
-    def __init__(self, url: str, title: str, body: str):
+
+def _candidate_config_paths():
+    paths = [os.path.join(os.path.abspath("."), CONFIG_FILENAME)]
+    if getattr(sys, "frozen", False):
+        paths.append(os.path.join(os.path.dirname(sys.executable), CONFIG_FILENAME))
+    paths.append(appdata_config_path())
+    meipass = _meipass()
+    if meipass:
+        paths.append(os.path.join(meipass, CONFIG_FILENAME))
+    seen = set()
+    for path in paths:
+        if path not in seen:
+            seen.add(path)
+            yield path
+
+
+def _writable_config_path(loaded_from: str) -> str:
+    meipass = _meipass()
+    if meipass and loaded_from.startswith(meipass):
+        return appdata_config_path()
+    return loaded_from
+
+
+def _ensure_config_file() -> str:
+    """ Use the panel JSON next to the app when present; otherwise app data. """
+    for path in _candidate_config_paths():
+        if os.path.exists(path):
+            return path
+
+    os.makedirs(get_appdata_path(), exist_ok=True)
+    path = appdata_config_path()
+    notifier = NtfyNotifier(path)
+    notifier.config = json_copy(DEFAULT_CONFIG)
+    _merge_legacy_settings(notifier.config)
+    notifier.save_config(path)
+    return path
+
+
+def json_copy(data):
+    import json
+    return json.loads(json.dumps(data))
+
+
+def notification_rows(config: dict):
+    """ Yield (id, item) in panel order, filling missing types from defaults. """
+    notifications = config.setdefault("notifications", {})
+    defaults = DEFAULT_CONFIG.get("notifications", {})
+    seen = set()
+    for key in defaults:
+        item = notifications.get(key) or {}
+        merged = json_copy(defaults[key])
+        merged.update(item)
+        merged["tags"] = ""
+        notifications[key] = merged
+        seen.add(key)
+        yield key, merged
+    for key, item in notifications.items():
+        if key not in seen:
+            item["tags"] = ""
+            yield key, item
+
+
+def _merge_legacy_settings(config: dict) -> None:
+    legacy = os.path.join(get_appdata_path(), LEGACY_SETTINGS_FILENAME)
+    try:
+        import json
+        with open(legacy, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return
+    if "enabled" in data:
+        config["enabled"] = bool(data["enabled"])
+    if data.get("server"):
+        config["serverUrl"] = str(data["server"]).rstrip("/")
+    if data.get("topic"):
+        config["topic"] = str(data["topic"]).strip()
+    logger.info("migrated legacy ntfy_settings.json into ntfy_config.json")
+
+
+class NtfyConfig:
+    """ Facade over ntfy_config.json for the settings dialog. """
+
+    def __init__(self, enabled: bool = True, server: str = DEFAULT_SERVER,
+                 topic: str = "", token: str = "", notifier: NtfyNotifier = None):
+        self._notifier = notifier or NtfyNotifier(_ensure_config_file())
+        cfg = self._notifier.config
+        cfg["enabled"] = enabled
+        cfg["serverUrl"] = (server or DEFAULT_SERVER).rstrip("/")
+        cfg["topic"] = (topic or "").strip()
+        cfg["token"] = token if token is not None else cfg.get("token", "")
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self._notifier.config.get("enabled", True))
+
+    @property
+    def server(self) -> str:
+        return str(self._notifier.config.get("serverUrl") or DEFAULT_SERVER).rstrip("/")
+
+    @property
+    def topic(self) -> str:
+        return str(self._notifier.config.get("topic") or "").strip()
+
+    @property
+    def token(self) -> str:
+        return str(self._notifier.config.get("token") or "")
+
+    @property
+    def notifier(self) -> NtfyNotifier:
+        return self._notifier
+
+    @classmethod
+    def load(cls) -> "NtfyConfig":
+        path = _ensure_config_file()
+        notifier = NtfyNotifier(path)
+        list(notification_rows(notifier.config))
+        cfg = notifier.config
+        return cls(
+            enabled=bool(cfg.get("enabled", True)),
+            server=str(cfg.get("serverUrl") or DEFAULT_SERVER),
+            topic=str(cfg.get("topic") or ""),
+            token=str(cfg.get("token") or ""),
+            notifier=notifier,
+        )
+
+    def save(self) -> None:
+        path = _writable_config_path(self._notifier.config_file)
+        try:
+            self._notifier.save_config(path)
+            self._notifier.config_file = path
+        except Exception:
+            logger.warning("could not save ntfy config to %s", path, exc_info=True)
+
+
+def send_test(config: NtfyConfig, server: str = None, topic: str = None,
+              token: str = None, claim_code: str = "3FR",
+              title_template: str = None, body_template: str = None,
+              priority: int = None) -> str:
+    """ Publish a test notification synchronously for the settings dialog. """
+    temp = NtfyNotifier.__new__(NtfyNotifier)
+    temp.config_file = config.notifier.config_file
+    temp.config = json_copy(config.notifier.config)
+    temp.config["enabled"] = True
+    temp.config["serverUrl"] = (server or config.server or DEFAULT_SERVER).rstrip("/")
+    temp.config["topic"] = (topic if topic is not None else config.topic).strip()
+    temp.config["token"] = token if token is not None else config.token
+    for item in temp.config.get("notifications", {}).values():
+        if item.get("code") == claim_code:
+            item["enabled"] = True
+            if title_template is not None:
+                item["titleTemplate"] = title_template
+            if body_template is not None:
+                item["bodyTemplate"] = body_template
+            if priority is not None:
+                item["priority"] = int(priority)
+            break
+    ok = temp.send_claim_notification(
+        claim_code, 6, "Nowak Jan", "Kowalski Piotr", extra_data={"move": "test"}
+    )
+    if ok:
+        logger.info("ntfy test sent to %s/%s", temp.config["serverUrl"], temp.config["topic"])
+        return ""
+    return "Send failed. Check server, topic, and token."
+
+
+class _SendClaim(QRunnable):
+    def __init__(self, notifier: NtfyNotifier, claim_code: str, board_num,
+                 white: str, black: str, extra_data: dict):
         super().__init__()
-        self.url = url
-        self.title = title
-        self.body = body
+        self.notifier = notifier
+        self.claim_code = claim_code
+        self.board_num = board_num
+        self.white = white
+        self.black = black
+        self.extra_data = extra_data
 
     def run(self):
         try:
-            _publish(self.url, self.title, self.body)
+            self.notifier.send_claim_notification(
+                self.claim_code, self.board_num, self.white, self.black, self.extra_data
+            )
         except Exception:
-            """ Contained here on purpose. An exception escaping QRunnable.run()
-            takes the process down, and a missed phone notification must never
-            cost the arbiter the running scan."""
-            logger.warning("ntfy send failed for %s", self.title, exc_info=True)
+            logger.warning("ntfy send failed for %s", self.claim_code, exc_info=True)
 
 
-def send_claim(config: NtfyConfig, claim_type: str, players: str, move: str) -> None:
-    """ Queue a claim for delivery. Returns immediately.
+def _split_players(players: str):
+    if " - " in players:
+        white, black = players.split(" - ", 1)
+        return white, black
+    return players, ""
 
-    Args:
-        config: Where to publish, and whether to.
-        claim_type: The kind of draw, used as the notification title.
-        players: The names of the players.
-        move: With which move the draw is valid.
-    """
+
+def send_claim(config: NtfyConfig, claim_type: ClaimType, board_number: str,
+               players: str, move: str) -> None:
+    """ Queue a claim for delivery. Returns immediately. """
     if not config.enabled or not config.topic:
         return
-    QThreadPool.globalInstance().start(_SendClaim(config.url, claim_type, f"{players}\n{move}"))
+    code = CLAIM_TYPE_TO_CODE.get(claim_type)
+    if not code:
+        return
+    white, black = _split_players(players)
+    QThreadPool.globalInstance().start(_SendClaim(
+        config.notifier, code, board_number, white, black, {"move": move}
+    ))
+
+
+def send_code(config: NtfyConfig, claim_code: str, board_num="",
+              white_player="", black_player="", extra_data=None) -> None:
+    """ Queue a named event (ERR_PGN, TIME, ...) for delivery. """
+    if not config.enabled or not config.topic:
+        return
+    QThreadPool.globalInstance().start(_SendClaim(
+        config.notifier, claim_code, board_num, white_player, black_player, extra_data or {}
+    ))
